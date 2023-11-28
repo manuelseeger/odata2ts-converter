@@ -8,4 +8,4 @@ const pkg: ConverterPackage = {
 };
 
 export default pkg;
-export { v2JulianDateToGregorianDateConverter as julianDateToGregorianDateConverter };
+export { v2JulianDateToGregorianDateConverter };

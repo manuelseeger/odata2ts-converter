@@ -9,7 +9,7 @@ import {
   padZerosLeft,
 } from "./DateTimeToDateTimeOffsetConverter";
 
-const CALENDAR_SWITCH_TIMESTAMP = -12216614400000;
+const CALENDAR_SWITCH_TIMESTAMP = -12218515200000;
 
 // format: [J-year, J-JS-month, J-day, G-JS-month, G-day, offset]
 const JULIAN_TO_GREGORIAN_DATE_MAP = [
@@ -133,7 +133,7 @@ export const v2JulianDateToGregorianDateConverter: ValueConverter<string, string
     let timestamp = matched[1];
 
     if (Number(timestamp) < CALENDAR_SWITCH_TIMESTAMP) {
-      timestamp = convertInternal(timestamp);
+      timestamp = convertInternal(timestamp, -1);
     }
 
     const sign = matched[3];
@@ -182,3 +182,5 @@ function convertInternal(timestamp: string, direction: 1 | -1 = 1): string {
   t500_1.setDate(t500_1.getDate() + offset);
   return t500_1.getTime().toString();
 }
+
+console.log(v2JulianDateToGregorianDateConverter.convertFrom("/Date(-12218515200000)/"));
