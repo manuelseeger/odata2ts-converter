@@ -1,18 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 import { dateTimeOffsetToDateConverter } from "../src";
 import { execCommonConverterTests } from "./CommonTests";
 
