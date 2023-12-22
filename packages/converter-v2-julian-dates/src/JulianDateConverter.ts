@@ -4,15 +4,25 @@ import { ODataTypesV2, ODataTypesV4 } from "@odata2ts/odata-core";
 import {
   DATE_TIME_V2_REGEXP,
   ISO_OFFSET_REGEXP,
-  formatDateTimeV2,
   formatIsoOffset,
   padZerosLeft,
 } from "./DateTimeToDateTimeOffsetConverter";
 
-const CALENDAR_SWITCH_TIMESTAMP = -12218515200000;
+const GREY_ZONE_MAX_TIMESTAMP = -12218515200000; // 1582-10-24T00:00:00.000Z
+const GREY_ZONE_MIN_TIMESTAMP = -12219292800000; // 1582-10-15T00:00:00.000Z
+const MIN_TIMESTAMP = -77945675648000;
+interface JulianToGregorianDateMapRow {
+  0: number;
+  1: number;
+  2: number;
+  3: number;
+  4: number;
+  5: number | null;
+  [index: number]: number | null;
+}
 
-// format: [J-year, J-JS-month, J-day, G-JS-month, G-day, offset]
-const JULIAN_TO_GREGORIAN_DATE_MAP = [
+// [J-year, J-JS-month, J-day, G-JS-month, G-day, offset]
+const JULIAN_TO_GREGORIAN_DATE_MAP: JulianToGregorianDateMapRow[] = [
   [-500, 2, 5, 1, 28, null],
   [-500, 2, 6, 2, 1, -5],
   [-300, 2, 3, 1, 27, -5],
@@ -84,17 +94,20 @@ const JULIAN_TO_GREGORIAN_DATE_MAP = [
   [2100, 1, 29, 2, 14, 14],
 ];
 
-function findOffset(year: number, month: number, day: number): number | null {
+function findOffset(year: number, month: number, day: number, calendar: 0 | 2 = 0): JulianToGregorianDateMapRow | null {
   let left: number = 0;
   let right: number = JULIAN_TO_GREGORIAN_DATE_MAP.length - 1;
-  let closestRow: number[] | null = null;
+  let closestRow: JulianToGregorianDateMapRow | null = null;
 
   while (left <= right) {
     const mid: number = Math.floor((left + right) / 2);
-    const [midYear, midMonth, midDay] = JULIAN_TO_GREGORIAN_DATE_MAP[mid] as number[];
+    const candidate = JULIAN_TO_GREGORIAN_DATE_MAP[mid];
+    const midYear = candidate[0];
+    const midMonth = candidate[1 + calendar] as number;
+    const midDay = candidate[2 + calendar] as number;
 
     if (midYear === year && midMonth === month && midDay === day) {
-      closestRow = JULIAN_TO_GREGORIAN_DATE_MAP[mid] as number[];
+      closestRow = candidate;
       break;
     }
 
@@ -103,14 +116,14 @@ function findOffset(year: number, month: number, day: number): number | null {
       (midYear === year && midMonth < month) ||
       (midYear === year && midMonth === month && midDay < day)
     ) {
-      closestRow = JULIAN_TO_GREGORIAN_DATE_MAP[mid] as number[];
+      closestRow = candidate;
       left = mid + 1;
     } else {
       right = mid - 1;
     }
   }
 
-  return closestRow ? closestRow[5] : null;
+  return closestRow ? closestRow : null;
 }
 
 export const v2JulianDateToGregorianDateConverter: ValueConverter<string, string> = {
@@ -130,16 +143,29 @@ export const v2JulianDateToGregorianDateConverter: ValueConverter<string, string
       return undefined;
     }
 
-    let timestamp = matched[1];
+    const timestamp = matched[1];
 
-    if (Number(timestamp) < CALENDAR_SWITCH_TIMESTAMP) {
-      timestamp = convertInternal(timestamp, -1);
+    let timestamp_number = Number(timestamp);
+
+    if (timestamp_number < MIN_TIMESTAMP) {
+      throw new Error("Cannot meaningfully convert dates before BC 500-02-05");
+    }
+
+    if (timestamp_number < GREY_ZONE_MAX_TIMESTAMP) {
+      if (timestamp_number >= GREY_ZONE_MIN_TIMESTAMP) {
+        console.warn(
+          "Converter cannot know if the date is in the Julian or Gregorian calendar " +
+            "for dates between 1582-10-15 and 1582-10-24. Assuming Gregorian calendar."
+        );
+      } else {
+        timestamp_number = convertInternal(timestamp_number, -1);
+      }
     }
 
     const sign = matched[3];
     const offsetInMin = matched[4];
 
-    const iso = new Date(Number(timestamp)).toISOString();
+    const iso = new Date(timestamp_number).toISOString();
     const offset = sign && offsetInMin ? formatIsoOffset(sign, offsetInMin) : "";
 
     return offset ? iso.substring(0, iso.length - 1) + offset : iso;
@@ -151,36 +177,78 @@ export const v2JulianDateToGregorianDateConverter: ValueConverter<string, string
       return value;
     }
 
+    const gregorianValue = new Date(value);
+    let timestamp = gregorianValue.getTime();
+
+    // match iso date string
+    const ISO_DATE_REGEX = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):?(\d{2})?\.?(\d{3})?Z$/;
+    const matchedIso = value.match(ISO_DATE_REGEX);
+    if (!matchedIso || matchedIso.length < 8) {
+      return undefined;
+    }
+
+    const offsetRecord = findOffset(Number(matchedIso[1]), Number(matchedIso[2]), Number(matchedIso[3]), 2);
+
+    if (offsetRecord && offsetRecord[5] === null) {
+      const gregorianValue = new Date(offsetRecord[0], offsetRecord[3], offsetRecord[4]);
+    }
+
+    if (timestamp < MIN_TIMESTAMP) {
+      throw new Error("Cannot meaningfully convert dates before BC 500-02-05");
+    }
+
+    if (timestamp < GREY_ZONE_MAX_TIMESTAMP) {
+      if (timestamp >= GREY_ZONE_MIN_TIMESTAMP) {
+        console.warn(
+          "Converter cannot know if the date is in the Julian or Gregorian calendar " +
+            "for dates between 1582-10-15 and 1582-10-24. Assuming Gregorian calendar."
+        );
+      } else {
+        timestamp = convertInternal(timestamp, 1);
+      }
+    }
+
     // handle offset
     const matched = value.match(ISO_OFFSET_REGEXP);
     if (matched && matched.length === 4) {
-      const isoString = value.replace(ISO_OFFSET_REGEXP, "Z");
-
       const minutes = Number(matched[2]) * 60 + Number(matched[3]);
       const offset = matched[1] + minutes;
-      return formatDateTimeV2(isoString, offset);
+      return formatDateTimeV2(timestamp, offset);
     }
 
-    return formatDateTimeV2(value);
+    return formatDateTimeV2(timestamp);
   },
 };
 
-function convertInternal(timestamp: string, direction: 1 | -1 = 1): string {
-  const t500 = new Date(Number(timestamp));
-
-  let offset = findOffset(t500.getFullYear(), t500.getMonth() + 1, t500.getDate());
-
-  if (offset === null) {
-    throw new Error(
-      `${t500.getFullYear()} ${t500.getMonth() + 1} ${t500.getDate()} does not exist on the Gregorian calendar.`
-    );
-  }
-
-  offset = offset * direction;
-
-  let t500_1 = new Date(t500);
-  t500_1.setDate(t500_1.getDate() + offset);
-  return t500_1.getTime().toString();
+function formatDateTimeV2(timestamp: number, offset?: string) {
+  return `/Date(${timestamp}${offset || ""})/`;
 }
 
-console.log(v2JulianDateToGregorianDateConverter.convertFrom("/Date(-12218515200000)/"));
+function convertInternal(timestamp: number, direction: 1 | -1 = 1): number {
+  const t = new Date(timestamp);
+
+  const offsetRecord = findOffset(t.getFullYear(), t.getMonth() + 1, t.getDate());
+
+  if (offsetRecord === null) {
+    throw new Error(`Can't find ${t.getFullYear()} ${t.getMonth() + 1} ${t.getDate()} in conversion table`);
+  }
+
+  let t_1 = new Date(t);
+
+  if (offsetRecord[5] === null) {
+    const moveIndex = direction > 0 ? 0 : 2;
+    t_1.setMonth(offsetRecord[1 + moveIndex] as number);
+    t_1.setDate(offsetRecord[2 + moveIndex] as number);
+  } else {
+    const offset = (offsetRecord[5] as number) * direction;
+    t_1.setDate(t_1.getDate() + offset);
+  }
+
+  return t_1.getTime();
+}
+
+//console.log(v2JulianDateToGregorianDateConverter.convertFrom("/Date(-12218515200000)/"));
+//console.log(v2JulianDateToGregorianDateConverter.convertTo("0777-06-13T00:00:00.000Z"));
+console.log(v2JulianDateToGregorianDateConverter.convertTo("1100-02-29T00:00:00.000Z"));
+
+-37632988800000;
